@@ -173,8 +173,8 @@ def islem_miktari_hesapla(bakiye_tl, bakiye_usdt, alis_fiyat, satis_fiyat,
 class GunlukTakip:
     """Gunluk islem ve zarar limitlerini takip eder."""
 
-    def __init__(self, max_islem, max_zarar_tl):
-        self.max_islem = max_islem
+    def __init__(self, max_islem=None, max_zarar_tl=15):
+        self.max_islem = max_islem  # None = limitsiz
         self.max_zarar_tl = max_zarar_tl
         self.bugun = date.today()
         self.islem_sayisi = 0
@@ -193,7 +193,7 @@ class GunlukTakip:
         """Gunluk limitler uygun mu?"""
         self._gun_kontrolu()
 
-        if self.islem_sayisi >= self.max_islem:
+        if self.max_islem is not None and self.islem_sayisi >= self.max_islem:
             return False, f"Gunluk islem limiti doldu ({self.max_islem})"
 
         if self.toplam_kar_zarar <= -self.max_zarar_tl:
@@ -219,7 +219,7 @@ class GunlukTakip:
         return {
             "tarih": str(self.bugun),
             "islem_sayisi": self.islem_sayisi,
-            "kalan_islem": self.max_islem - self.islem_sayisi,
+            "kalan_islem": (self.max_islem - self.islem_sayisi) if self.max_islem else "limitsiz",
             "toplam_kar_zarar": self.toplam_kar_zarar,
             "kalan_zarar_limiti": self.max_zarar_tl + self.toplam_kar_zarar,
         }
@@ -307,7 +307,7 @@ if __name__ == "__main__":
     print()
 
     # Gunluk takip
-    takip = GunlukTakip(max_islem=20, max_zarar_tl=15)
+    takip = GunlukTakip(max_zarar_tl=15)
     ok, msg = takip.islem_yapilabilir_mi()
     print(f"Islem yapilabilir: {ok} ({msg})")
     takip.islem_kaydet(1.50, {"test": True})

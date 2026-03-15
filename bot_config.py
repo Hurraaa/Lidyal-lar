@@ -30,7 +30,7 @@ MAX_ISLEM_USDT = 50                # Maksimum 50 USDT (guvende kal)
 ISLEM_BAKIYE_ORANI = 0.30          # Bakiyenin max %30'u ile islem
 
 # Gunluk limitler
-GUNLUK_MAX_ISLEM = 20              # Gunde max 20 islem
+GUNLUK_MAX_ISLEM = None             # Islem sayisi limiti yok (zarar limiti koruyor)
 GUNLUK_MAX_ZARAR_TL = 15           # Gunde max 15 TL zarar (toplam sermayenin %1.5'i)
 GUNLUK_MAX_ZARAR_DURDUR = True     # Zarar limitine ulasilinca botu durdur
 

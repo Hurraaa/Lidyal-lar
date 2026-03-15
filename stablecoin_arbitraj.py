@@ -792,7 +792,7 @@ def rapor_yazdir():
   - Minimum fark esigi : %{en_ucuz_maliyet:.3f} (basabas)
   - Hedef fark         : %{en_ucuz_maliyet*1.5:.3f}+ (guvenli kar)
   - Islem buyuklugu    : Bakiyenin %{ISLEM_ORANI*100:.0f}'i
-  - Gunluk limit       : Max 20 islem (komisyon kademesi icin)
+  - Gunluk limit       : Islem sayisi limitsiz (zarar limiti koruyor)
 
   ADIM 5: REBALANCING (Bakiye Dengeleme)
   - Ne zaman: Bir borsadaki TL veya USDT %{REBALANCING_ESIGI*100:.0f}'in altina dustugunde

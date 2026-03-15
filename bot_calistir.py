@@ -433,7 +433,8 @@ class ArbitrajBot:
         print(f"  Min kar esigi  : %{cfg.MIN_KAR_ESIGI_PCT*100:.2f}")
         print(f"  Max islem      : {cfg.MAX_ISLEM_USDT} USDT")
         print(f"  Kontrol araligi: {cfg.FIYAT_KONTROL_ARALIGI} saniye")
-        print(f"  Gunluk limit   : {cfg.GUNLUK_MAX_ISLEM} islem / {cfg.GUNLUK_MAX_ZARAR_TL} TL zarar")
+        islem_limit = f"{cfg.GUNLUK_MAX_ISLEM} islem" if cfg.GUNLUK_MAX_ISLEM else "limitsiz"
+        print(f"  Gunluk limit   : {islem_limit} / {cfg.GUNLUK_MAX_ZARAR_TL} TL zarar")
         print()
 
         if not self.paper_trading:
