@@ -1,11 +1,12 @@
 """
-Kripto Arbitraj Fizibilite Analizi
-==================================
-Midas Kripto ile global borsalar (Binance vb.) arasinda
-BTC arbitraj firsatlarinin analizi.
+Eszamanli Kripto Arbitraj Analizi
+=================================
+Iki borsada (Midas + Binance) ayni anda hazir sermaye ile
+esanli al-sat arbitraj stratejisinin fizibilite analizi.
 
-Midas'in halka acik API'si olmadigindan, Turkiye primi
-modelleme + canli Binance/CoinGecko verisi ile analiz yapilir.
+Model: Her iki borsada hem TL hem coin bulundur.
+       Fiyat farki olustugunda ucuz tarafta AL, pahali tarafta SAT.
+       Kripto transferi YOK - esanli islem.
 """
 
 import random
@@ -15,18 +16,18 @@ import json
 import time
 import ssl
 from urllib.request import urlopen, Request
-from urllib.error import URLError, HTTPError
 from datetime import datetime
 
 # ============================================================
 # PARAMETRELER
 # ============================================================
 
-# Sermaye
-SERMAYE_TL = 100_000
+# Sermaye (toplam 100K, iki borsaya esit dagitilir)
+TOPLAM_SERMAYE_TL = 100_000
+BORSA_BASI_SERMAYE = TOPLAM_SERMAYE_TL / 2  # 50K Midas, 50K Binance
+# Her borsada: %50 TL + %50 coin degeri olarak baslar
 
 # Midas komisyon oranlari (hacme gore kademeli)
-# Kaynak: https://www.getmidas.com/ucretler/
 MIDAS_KOMISYON_KADEMELERI = [
     (1_000_000, 0.0020),       # 0-1M TL: %0.20
     (10_000_000, 0.0015),      # 1M-10M TL: %0.15
@@ -37,32 +38,32 @@ MIDAS_KOMISYON_KADEMELERI = [
 # Binance komisyon
 BINANCE_KOMISYON = 0.0010      # %0.10
 
-# BTC transfer parametreleri
-BTC_ONAY_SAYISI = 3
-BTC_BLOK_SURESI_DK = 10
-BTC_TRANSFER_SURESI_DK = BTC_ONAY_SAYISI * BTC_BLOK_SURESI_DK  # ~30 dk
-BTC_NETWORK_UCRETI_USD = 5.0
+# Slippage (esanli islemde daha dusuk)
+SLIPPAGE_PCT = 0.0005          # %0.05 (tek yon)
 
-# Piyasa parametreleri
-SLIPPAGE_PCT = 0.0010          # %0.10 slippage (tek yon)
-BTC_SAATLIK_VOLATILITE = 0.015 # %1.5 saatlik volatilite (gercekci)
+# Fiyat farki modeli (borsalar arasi anlik fark)
+# Gercekte farklar genelde %0.1-0.5 arasi, bazen %1-3
+FIYAT_FARKI_ORT_PCT = 0.003    # Ortalama %0.3
+FIYAT_FARKI_STD_PCT = 0.005    # Std sapma %0.5
 
-# Turkiye primi parametreleri (simulasyon icin)
-TURKIYE_PRIMI_ORT_PCT = 0.015  # Ortalama %1.5
-TURKIYE_PRIMI_STD_PCT = 0.010  # Std sapma %1.0
+# Rebalancing parametreleri
+BTC_NETWORK_UCRETI_USD = 5.0   # Rebalancing icin transfer ucreti
+REBALANCING_ESIGI = 0.80       # Bir taraftaki TL veya coin %80'den fazla
+                                # azaldiysa rebalancing yap
 
-# Varsayilan fiyatlar (API basarisiz olursa)
+# Varsayilan fiyatlar
 VARSAYILAN_BTC_USD = 85_000
 VARSAYILAN_USD_TRY = 38.50
 
 # Monte Carlo
 SIMULASYON_SAYISI = 5_000
 GUN_SAYISI = 30
-ISLEM_PER_GUN = 2
+FIRSAT_PER_GUN = 10            # Gunde kac kez fiyat farki kontrol edilir
+ISLEM_ORANI = 0.30             # Her firsatta bakiyenin %30'u ile islem
 
 
 # ============================================================
-# API FONKSIYONLARI
+# API FONKSIYONLARI (onceki versiyondan)
 # ============================================================
 
 def api_istegi_yap(url, timeout=10):
@@ -92,27 +93,20 @@ def coingecko_fiyat_al():
     )
     if veri and "bitcoin" in veri:
         btc = veri["bitcoin"]
-        return {
-            "usd": btc.get("usd"),
-            "try": btc.get("try"),
-        }
+        return {"usd": btc.get("usd"), "try": btc.get("try")}
     return None
 
 
 def canli_veri_topla():
-    """
-    Canli piyasa verilerini toplar.
-    Basarisiz olursa varsayilan degerler kullanilir.
-    """
+    """Canli piyasa verilerini toplar."""
     sonuc = {
         "canli": False,
         "btc_usd": VARSAYILAN_BTC_USD,
         "usd_try": VARSAYILAN_USD_TRY,
-        "btc_try_global": VARSAYILAN_BTC_USD * VARSAYILAN_USD_TRY,
+        "btc_try": VARSAYILAN_BTC_USD * VARSAYILAN_USD_TRY,
         "kaynak": "SIMULASYON (varsayilan degerler)",
     }
 
-    # Binance fiyati
     print("  Binance API sorgusu...", end=" ")
     binance_fiyat = binance_btc_fiyat_al()
     if binance_fiyat:
@@ -122,24 +116,21 @@ def canli_veri_topla():
     else:
         print("BASARISIZ (varsayilan kullaniliyor)")
 
-    # CoinGecko fiyatlari
-    time.sleep(1.5)  # Rate limit'e saygi
+    time.sleep(1.5)
     print("  CoinGecko API sorgusu...", end=" ")
     cg = coingecko_fiyat_al()
     if cg and cg.get("usd") and cg.get("try"):
         sonuc["usd_try"] = cg["try"] / cg["usd"]
-        sonuc["btc_try_global"] = cg["try"]
+        sonuc["btc_try"] = cg["try"]
         sonuc["canli"] = True
         print(f"OK (${cg['usd']:,.0f} / {cg['try']:,.0f} TL)")
     else:
         print("BASARISIZ (varsayilan kullaniliyor)")
 
-    # Global BTC/TRY hesapla
     if not (cg and cg.get("try")):
-        sonuc["btc_try_global"] = sonuc["btc_usd"] * sonuc["usd_try"]
+        sonuc["btc_try"] = sonuc["btc_usd"] * sonuc["usd_try"]
 
     sonuc["kaynak"] = "CANLI VERI" if sonuc["canli"] else "SIMULASYON (varsayilan degerler)"
-
     return sonuc
 
 
@@ -155,132 +146,177 @@ def midas_komisyon_hesapla(hacim_tl):
     return MIDAS_KOMISYON_KADEMELERI[-1][1]
 
 
-def tek_arbitraj_maliyeti(miktar_tl, btc_try_global, usd_try):
+def esanli_arbitraj_maliyeti(miktar_tl):
     """
-    Tek bir arbitraj isleminin toplam maliyetini hesaplar.
+    Esanli (simultaneous) arbitraj isleminin maliyetini hesaplar.
 
-    Senaryo: Global'den BTC al -> Midas'ta sat
-    (veya tersi, maliyetler simetrik)
+    Bir borsada AL + diger borsada SAT (ayni anda).
+    Network ucreti YOK, transfer YOK.
 
     Returns: (toplam_maliyet_tl, toplam_maliyet_pct)
     """
-    # 1. Alis komisyonu (global taraf - Binance)
-    alis_komisyon = miktar_tl * BINANCE_KOMISYON
+    # Alis komisyonu (ucuz borsa - biri Midas biri Binance olabilir)
+    # En kotu senaryo: Midas'tan al (yuksek komisyon)
+    midas_kom = miktar_tl * midas_komisyon_hesapla(miktar_tl)
+    binance_kom = miktar_tl * BINANCE_KOMISYON
 
-    # 2. Satis komisyonu (Midas taraf)
-    satis_komisyon = miktar_tl * midas_komisyon_hesapla(miktar_tl)
-
-    # 3. BTC network transfer ucreti
-    network_ucreti_tl = BTC_NETWORK_UCRETI_USD * usd_try
-
-    # 4. Slippage (iki taraf)
+    # Slippage (iki taraf)
     slippage = miktar_tl * SLIPPAGE_PCT * 2
 
-    toplam = alis_komisyon + satis_komisyon + network_ucreti_tl + slippage
+    toplam = midas_kom + binance_kom + slippage
     toplam_pct = toplam / miktar_tl * 100
 
     return toplam, toplam_pct
 
 
-def minimum_prim_hesapla(miktar_tl, usd_try):
-    """Basabas icin gereken minimum Turkiye primini hesaplar (%)."""
-    _, maliyet_pct = tek_arbitraj_maliyeti(miktar_tl, None, usd_try)
+def minimum_fark_hesapla(miktar_tl):
+    """Basabas icin gereken minimum borsalar-arasi fiyat farki (%)."""
+    _, maliyet_pct = esanli_arbitraj_maliyeti(miktar_tl)
     return maliyet_pct
-
-
-def zaman_riski_hesapla(prim_pct, transfer_dk=BTC_TRANSFER_SURESI_DK):
-    """
-    Transfer suresi boyunca fiyat hareketinin primi silme olasiligini hesaplar.
-
-    BTC fiyati lognormal dagilim ile modellenir.
-    """
-    # Transfer suresi icin volatilite
-    saat = transfer_dk / 60.0
-    sigma = BTC_SAATLIK_VOLATILITE * math.sqrt(saat)
-
-    # Primin silinme olasiligi (tek tarafli)
-    # P(hareket > prim) = P(Z > prim/sigma)
-    if sigma == 0:
-        return 0.0
-
-    z = (prim_pct / 100.0) / sigma
-
-    # Normal dagilim CDF yaklasimlari (stdlib'de erfc yok)
-    # P(Z > z) hesabi
-    def norm_sf(x):
-        """Standart normal survival function yaklasimi."""
-        return 0.5 * math.erfc(x / math.sqrt(2))
-
-    return norm_sf(z)
 
 
 # ============================================================
 # MONTE CARLO SIMULASYONU
 # ============================================================
 
-def arbitraj_simulasyonu(sermaye, btc_try_global, usd_try):
+def arbitraj_simulasyonu(btc_try_fiyat, usd_try):
     """
-    Monte Carlo ile arbitraj stratejisi simulasyonu.
+    Esanli arbitraj Monte Carlo simulasyonu.
 
-    Her gun:
-    - Turkiye primi rastgele belirlenir
-    - Prim yeterli ise arbitraj yapilir
-    - Transfer sirasinda fiyat hareketi simule edilir
+    Her borsada baslangicta:
+    - %50 TL bakiye
+    - %50 degerinde BTC bakiye
+
+    Fiyat farki olustugunda ucuz tarafta al, pahali tarafta sat.
+    Rebalancing gerektiginde transfer maliyeti odenur.
     """
-    son_sermayeler = []
-    islem_sayilari = []
-    basarili_islemler = []
-
-    min_prim = minimum_prim_hesapla(sermaye, usd_try) / 100.0
+    sonuclar = []
+    toplam_islem_sayilari = []
+    toplam_rebalance_sayilari = []
+    toplam_karli_islemler = []
 
     for _ in range(SIMULASYON_SAYISI):
-        kasa = sermaye
-        toplam_islem = 0
-        basarili = 0
+        # Her borsada baslangic bakiyeleri
+        # Midas: 25K TL + 25K degerinde BTC
+        # Binance: 25K TL + 25K degerinde BTC
+        midas_tl = BORSA_BASI_SERMAYE / 2
+        midas_btc = (BORSA_BASI_SERMAYE / 2) / btc_try_fiyat  # BTC miktari
+
+        binance_tl = BORSA_BASI_SERMAYE / 2
+        binance_btc = (BORSA_BASI_SERMAYE / 2) / btc_try_fiyat
+
+        islem_sayisi = 0
+        rebalance_sayisi = 0
+        karli_islem = 0
+        rebalance_maliyet_toplam = 0
 
         for _ in range(GUN_SAYISI):
-            for _ in range(ISLEM_PER_GUN):
-                # Gunun Turkiye primini cek
-                prim = random.gauss(TURKIYE_PRIMI_ORT_PCT, TURKIYE_PRIMI_STD_PCT)
+            for _ in range(FIRSAT_PER_GUN):
+                # Anlik fiyat farkini cek (mutlak deger - yon rastgele)
+                fark_pct = abs(random.gauss(FIYAT_FARKI_ORT_PCT, FIYAT_FARKI_STD_PCT))
 
-                # Prim negatif olabilir (Turkiye'de ucuz)
-                if prim <= min_prim:
-                    continue  # Arbitraj karli degil, atlA
+                # Basabas kontrolu
+                # Islem miktari: mevcut bakiyenin ISLEM_ORANI kadar
+                potansiyel_islem_tl = min(midas_tl, binance_btc * btc_try_fiyat,
+                                          binance_tl, midas_btc * btc_try_fiyat)
+                potansiyel_islem_tl *= ISLEM_ORANI
 
-                toplam_islem += 1
+                if potansiyel_islem_tl < 100:  # Minimum islem limiti
+                    continue
 
-                # Arbitraj islem buyuklugu (kasanin %50'si ile)
-                islem_miktari = kasa * 0.5
+                basabas = minimum_fark_hesapla(potansiyel_islem_tl) / 100.0
 
-                # Brut kar (prim - maliyet)
-                _, maliyet_pct = tek_arbitraj_maliyeti(islem_miktari, btc_try_global, usd_try)
-                brut_kar_pct = (prim * 100) - maliyet_pct
+                if fark_pct <= basabas:
+                    continue  # Fark yeterli degil
 
-                # Transfer sirasinda fiyat hareketi (risk)
-                saat = BTC_TRANSFER_SURESI_DK / 60.0
-                sigma = BTC_SAATLIK_VOLATILITE * math.sqrt(saat)
-                fiyat_hareketi = random.gauss(0, sigma)
+                islem_sayisi += 1
 
-                # Net kar (brut kar - fiyat hareketi riski)
-                net_kar_pct = brut_kar_pct - abs(fiyat_hareketi) * 100
+                # Yon: Midas pahali mi Binance pahali mi? (esit olasilik)
+                midas_pahali = random.random() < 0.5
 
-                if net_kar_pct > 0:
-                    basarili += 1
+                islem_btc = potansiyel_islem_tl / btc_try_fiyat
+                _, maliyet_pct = esanli_arbitraj_maliyeti(potansiyel_islem_tl)
+                net_kar_pct = (fark_pct * 100) - maliyet_pct
+                net_kar_tl = potansiyel_islem_tl * (net_kar_pct / 100.0)
 
-                kasa += islem_miktari * (net_kar_pct / 100.0)
+                if net_kar_tl > 0:
+                    karli_islem += 1
 
-                if kasa <= 0:
-                    kasa = 0
-                    break
+                if midas_pahali:
+                    # Binance'den al (TL ile), Midas'tan sat (BTC ile)
+                    binance_tl -= potansiyel_islem_tl
+                    binance_btc += islem_btc
+                    midas_btc -= islem_btc
+                    midas_tl += potansiyel_islem_tl
+                else:
+                    # Midas'tan al (TL ile), Binance'den sat (BTC ile)
+                    midas_tl -= potansiyel_islem_tl
+                    midas_btc += islem_btc
+                    binance_btc -= islem_btc
+                    binance_tl += potansiyel_islem_tl
 
-            if kasa <= 0:
-                break
+                # Net kari ekle (iki tarafa esit dagit)
+                midas_tl += net_kar_tl / 2
+                binance_tl += net_kar_tl / 2
 
-        son_sermayeler.append(kasa)
-        islem_sayilari.append(toplam_islem)
-        basarili_islemler.append(basarili)
+                # Bakiye kontrolu (negatif olamaz)
+                if midas_tl < 0 or binance_tl < 0 or midas_btc < 0 or binance_btc < 0:
+                    # Islem yapilamazdi, geri al
+                    if midas_pahali:
+                        binance_tl += potansiyel_islem_tl
+                        binance_btc -= islem_btc
+                        midas_btc += islem_btc
+                        midas_tl -= potansiyel_islem_tl
+                    else:
+                        midas_tl += potansiyel_islem_tl
+                        midas_btc -= islem_btc
+                        binance_btc += islem_btc
+                        binance_tl -= potansiyel_islem_tl
+                    midas_tl -= net_kar_tl / 2
+                    binance_tl -= net_kar_tl / 2
+                    islem_sayisi -= 1
+                    if net_kar_tl > 0:
+                        karli_islem -= 1
+                    continue
 
-    return son_sermayeler, islem_sayilari, basarili_islemler
+            # Gun sonu: Rebalancing gerekli mi?
+            midas_toplam = midas_tl + midas_btc * btc_try_fiyat
+            binance_toplam = binance_tl + binance_btc * btc_try_fiyat
+            genel_toplam = midas_toplam + binance_toplam
+
+            # Bir borsadaki TL veya coin cok azaldiysa rebalance
+            midas_tl_oran = midas_tl / midas_toplam if midas_toplam > 0 else 0
+            binance_tl_oran = binance_tl / binance_toplam if binance_toplam > 0 else 0
+
+            rebalance_gerek = (midas_tl_oran < (1 - REBALANCING_ESIGI)
+                               or midas_tl_oran > REBALANCING_ESIGI
+                               or binance_tl_oran < (1 - REBALANCING_ESIGI)
+                               or binance_tl_oran > REBALANCING_ESIGI)
+
+            if rebalance_gerek and genel_toplam > 0:
+                rebalance_sayisi += 1
+                # Rebalancing maliyeti: BTC transfer ucreti
+                reb_maliyet = BTC_NETWORK_UCRETI_USD * usd_try
+                rebalance_maliyet_toplam += reb_maliyet
+
+                # Yeniden dengele: her borsada %50 TL, %50 coin
+                hedef_borsa = genel_toplam / 2
+                hedef_tl = hedef_borsa / 2
+                hedef_btc = (hedef_borsa / 2) / btc_try_fiyat
+
+                midas_tl = hedef_tl - reb_maliyet / 4
+                midas_btc = hedef_btc
+                binance_tl = hedef_tl - reb_maliyet / 4
+                binance_btc = hedef_btc
+
+        # Simulasyon sonu: toplam deger
+        toplam_deger = midas_tl + midas_btc * btc_try_fiyat + binance_tl + binance_btc * btc_try_fiyat
+        sonuclar.append(toplam_deger)
+        toplam_islem_sayilari.append(islem_sayisi)
+        toplam_rebalance_sayilari.append(rebalance_sayisi)
+        toplam_karli_islemler.append(karli_islem)
+
+    return sonuclar, toplam_islem_sayilari, toplam_rebalance_sayilari, toplam_karli_islemler
 
 
 # ============================================================
@@ -292,129 +328,148 @@ def rapor_yazdir():
 
     print()
     print("=" * 65)
-    print("  KRIPTO ARBITRAJ FIZIBILITE ANALIZI")
-    print("  Midas Kripto vs Global Piyasalar (Binance)")
+    print("  ESZAMANLI KRIPTO ARBITRAJ ANALIZI")
+    print("  Midas + Binance - Ayni Anda Al/Sat (Transfer Yok)")
     print("=" * 65)
     print()
 
     # ----------------------------------------------------------
-    # 0) Canli veri toplama
+    # Canli veri
     # ----------------------------------------------------------
     print("-" * 65)
     print("  PIYASA VERILERI")
     print("-" * 65)
     veri = canli_veri_topla()
     print()
-    print(f"  Veri kaynagi    : {veri['kaynak']}")
-    print(f"  BTC/USD         : ${veri['btc_usd']:>12,.0f}")
-    print(f"  USD/TRY         :  {veri['usd_try']:>12,.2f} TL")
-    print(f"  BTC/TRY (global): {veri['btc_try_global']:>12,.0f} TL")
-    print(f"  Sermaye         : {SERMAYE_TL:>12,.0f} TL")
+    print(f"  Veri kaynagi      : {veri['kaynak']}")
+    print(f"  BTC/USD           : ${veri['btc_usd']:>12,.0f}")
+    print(f"  USD/TRY           :  {veri['usd_try']:>12,.2f} TL")
+    print(f"  BTC/TRY           : {veri['btc_try']:>12,.0f} TL")
     print()
 
-    btc_try = veri["btc_try_global"]
+    btc_try = veri["btc_try"]
     usd_try = veri["usd_try"]
+
+    # ----------------------------------------------------------
+    # Strateji aciklamasi
+    # ----------------------------------------------------------
+    print("-" * 65)
+    print("  STRATEJI ACIKLAMASI")
+    print("-" * 65)
+    print(f"""
+  Toplam sermaye   : {TOPLAM_SERMAYE_TL:>10,.0f} TL
+  Midas'ta         : {BORSA_BASI_SERMAYE:>10,.0f} TL (yarisi TL, yarisi BTC)
+  Binance'de       : {BORSA_BASI_SERMAYE:>10,.0f} TL (yarisi TL, yarisi BTC)
+
+  NASIL CALISIR:
+  1. Her iki borsada da hem TL hem BTC hazir bekler
+  2. Borsalar arasi fiyat farki olustu mu anlik kontrol
+  3. Ucuz borsada AL + pahali borsada ayni anda SAT
+  4. Kripto transferi YOK = zaman riski YOK
+  5. Bakiyeler dengesizlestikce rebalancing yapilir
+""")
 
     # ----------------------------------------------------------
     # 1) MALIYET ANALIZI
     # ----------------------------------------------------------
     print("-" * 65)
-    print("  1) MALIYET ANALIZI - Tek Arbitraj Isleminin Maliyeti")
+    print("  1) MALIYET ANALIZI (Tek Esanli Arbitraj Islemi)")
     print("-" * 65)
     print()
 
-    miktar = SERMAYE_TL
+    miktar = 25_000  # Tipik islem buyuklugu (bakiyenin %30'u)
     midas_kom = midas_komisyon_hesapla(miktar) * 100
-    network_tl = BTC_NETWORK_UCRETI_USD * usd_try
 
-    print(f"  Islem miktari     : {miktar:>12,.0f} TL")
-    print(f"  Binance komisyon  : {miktar * BINANCE_KOMISYON:>12,.0f} TL (%{BINANCE_KOMISYON*100:.2f})")
-    print(f"  Midas komisyon    : {miktar * midas_komisyon_hesapla(miktar):>12,.0f} TL (%{midas_kom:.2f})")
-    print(f"  BTC network ucreti: {network_tl:>12,.0f} TL (${BTC_NETWORK_UCRETI_USD:.0f})")
-    print(f"  Slippage (2 taraf): {miktar * SLIPPAGE_PCT * 2:>12,.0f} TL (%{SLIPPAGE_PCT*200:.2f})")
+    print(f"  Islem miktari       : {miktar:>10,.0f} TL")
+    print(f"  Midas komisyon      : {miktar * midas_komisyon_hesapla(miktar):>10,.0f} TL (%{midas_kom:.2f})")
+    print(f"  Binance komisyon    : {miktar * BINANCE_KOMISYON:>10,.0f} TL (%{BINANCE_KOMISYON*100:.2f})")
+    print(f"  Slippage (2 taraf)  : {miktar * SLIPPAGE_PCT * 2:>10,.0f} TL (%{SLIPPAGE_PCT*200:.2f})")
+    print(f"  Network ucreti      :          0 TL (transfer yok!)")
 
-    toplam_maliyet, toplam_pct = tek_arbitraj_maliyeti(miktar, btc_try, usd_try)
-    print(f"  ────────────────────────────────────")
-    print(f"  TOPLAM MALIYET    : {toplam_maliyet:>12,.0f} TL (%{toplam_pct:.2f})")
+    toplam_mal, toplam_pct = esanli_arbitraj_maliyeti(miktar)
+    print(f"  ─────────────────────────────────────")
+    print(f"  TOPLAM MALIYET      : {toplam_mal:>10,.0f} TL (%{toplam_pct:.2f})")
+    print()
+
+    # Transfer modeli ile karsilastirma
+    transfer_maliyet = toplam_mal + BTC_NETWORK_UCRETI_USD * usd_try
+    print(f"  KARSILASTIRMA:")
+    print(f"    Esanli model      : %{toplam_pct:.2f} maliyet")
+    print(f"    Transfer modeli   : %{transfer_maliyet / miktar * 100:.2f} maliyet (+network ucreti)")
+    print(f"    Kazanc            : %{(transfer_maliyet / miktar * 100) - toplam_pct:.2f} daha ucuz!")
     print()
 
     # ----------------------------------------------------------
-    # 2) BASABAS PRIM TABLOSU
+    # 2) BASABAS FIYAT FARKI TABLOSU
     # ----------------------------------------------------------
     print("-" * 65)
-    print("  2) BASABAS PRIM TABLOSU")
-    print("     (Kar etmek icin Turkiye priminin bu degerin USTUNDE olmasi gerek)")
+    print("  2) BASABAS FIYAT FARKI TABLOSU")
+    print("     (Kar icin borsalar arasi farkin bu degerin USTUNDE olmasi gerek)")
     print("-" * 65)
     print()
-    print(f"  {'Islem Buyuklugu':>20s} | {'Min. Prim (Basabas)':>20s} | {'Maliyet (TL)':>15s}")
-    print(f"  {'─' * 20}─┼─{'─' * 20}─┼─{'─' * 15}")
+    print(f"  {'Islem Buyuklugu':>20s} | {'Min. Fark (Basabas)':>20s} | {'Maliyet (TL)':>12s}")
+    print(f"  {'─' * 20}─┼─{'─' * 20}─┼─{'─' * 12}")
 
-    test_miktarlari = [10_000, 25_000, 50_000, 100_000, 250_000, 500_000, 1_000_000]
+    test_miktarlari = [5_000, 10_000, 25_000, 50_000, 100_000, 250_000]
     for m in test_miktarlari:
-        prim = minimum_prim_hesapla(m, usd_try)
-        maliyet, _ = tek_arbitraj_maliyeti(m, btc_try, usd_try)
-        print(f"  {m:>18,.0f} TL │ {prim:>19.2f}% │ {maliyet:>13,.0f} TL")
+        fark = minimum_fark_hesapla(m)
+        maliyet, _ = esanli_arbitraj_maliyeti(m)
+        print(f"  {m:>18,.0f} TL │ {fark:>19.2f}% │ {maliyet:>10,.0f} TL")
 
     print()
-    print("  YORUM: Kucuk islemlerde network ucreti agir basar.")
-    print("         100K+ TL islemlerde basabas primi ~%0.50'ye duser.")
-    print()
-
-    # ----------------------------------------------------------
-    # 3) ZAMAN RISKI ANALIZI
-    # ----------------------------------------------------------
-    print("-" * 65)
-    print("  3) ZAMAN RISKI ANALIZI")
-    print(f"     (BTC transferi ~{BTC_TRANSFER_SURESI_DK} dk surer, bu surede fiyat degisir)")
-    print("-" * 65)
-    print()
-
-    transfer_saat = BTC_TRANSFER_SURESI_DK / 60.0
-    sigma = BTC_SAATLIK_VOLATILITE * math.sqrt(transfer_saat)
-    sigma_pct = sigma * 100
-
-    print(f"  BTC saatlik volatilite  : %{BTC_SAATLIK_VOLATILITE*100:.1f}")
-    print(f"  Transfer suresi         : {BTC_TRANSFER_SURESI_DK} dakika")
-    print(f"  Transfer volatilitesi   : %{sigma_pct:.2f} (std sapma)")
-    print()
-
-    print(f"  {'Turkiye Primi':>15s} | {'Primin Silinme Olasiligi':>25s} | {'Risk Degerlendirmesi'}")
-    print(f"  {'─' * 15}─┼─{'─' * 25}─┼─{'─' * 25}")
-
-    prim_testleri = [0.5, 1.0, 1.5, 2.0, 3.0, 5.0]
-    for p in prim_testleri:
-        risk = zaman_riski_hesapla(p, BTC_TRANSFER_SURESI_DK) * 100
-        if risk > 40:
-            seviye = "!!! COK RISKLI"
-        elif risk > 25:
-            seviye = "!! RISKLI"
-        elif risk > 10:
-            seviye = "! ORTA RISK"
-        else:
-            seviye = "KABUL EDILEBILIR"
-        print(f"  {p:>14.1f}% │ {risk:>24.1f}% │ {seviye}")
-
-    print()
-    print(f"  YORUM: %{sigma_pct:.2f} volatilite ile, %1 prim bile riskli.")
-    print(f"         Guvende olmak icin en az %2-3 prim gerekir.")
+    print(f"  YORUM: Network ucreti olmadigi icin maliyet SABIT %{toplam_pct:.2f}.")
+    print(f"         Bu, transfer modelinden cok daha dusuk!")
     print()
 
     # ----------------------------------------------------------
-    # 4) TURKIYE PRIMI GERCEKLIGI
+    # 3) FIYAT FARKI GERCEKLIGI
     # ----------------------------------------------------------
     print("-" * 65)
-    print("  4) TURKIYE PRIMI GERCEKLIGI")
+    print("  3) BORSALAR ARASI FIYAT FARKI GERCEKLIGI")
     print("-" * 65)
     print("""
-  Turkiye'deki kripto borsalarinda (Midas, BtcTurk, Paribu)
-  zaman zaman global fiyatlara gore prim olusur. Ancak:
+  Turkiye borsalari ile global borsalar arasindaki farklar:
 
-  - Normal zamanlarda prim: %0.5 - %1.5 (YETERSIZ)
-  - Panik/FOMO zamanlarinda: %2 - %5 (FIRSATLAR OLABILIR)
-  - Nadir krizlerde (2021 Turkiye primi): %5 - %15
+  NORMAL PIYASA:
+  - Anlik fark: %0.1 - %0.5 (cogunlukla)
+  - Firsatlar: Gunde 5-15 kez %0.3+ fark olusabilir
+  - Sure: Fark genelde saniyeler-dakikalar icinde kapanir
 
-  Ortalama prim: ~%1.5 (simulasyonda bu deger kullanildi)
-  Prim std sapma: ~%1.0 (degiskenlik)
+  HAREKETLI PIYASA:
+  - Anlik fark: %0.5 - %2.0
+  - Firsatlar: Gunde 20-50 kez
+  - Sure: Daha uzun surebilir (dakikalar)
+
+  PANIK/FOMO:
+  - Anlik fark: %1 - %5+
+  - Firsatlar: Surekli (saatlerce devam edebilir)
+
+  SIMULASYON PARAMETRELERI:""")
+    print(f"  - Ort. fiyat farki  : %{FIYAT_FARKI_ORT_PCT*100:.1f}")
+    print(f"  - Std sapma          : %{FIYAT_FARKI_STD_PCT*100:.1f}")
+    print(f"  - Kontrol/gun        : {FIRSAT_PER_GUN}")
+    print(f"  - Islem orani        : bakiyenin %{ISLEM_ORANI*100:.0f}'i")
+    print()
+
+    # ----------------------------------------------------------
+    # 4) REBALANCING ANALIZI
+    # ----------------------------------------------------------
+    print("-" * 65)
+    print("  4) REBALANCING ANALIZI")
+    print("-" * 65)
+    reb_maliyet_tl = BTC_NETWORK_UCRETI_USD * usd_try
+    print(f"""
+  PROBLEM: Her islemde bir borsadaki TL artar, coin azalir.
+           Diger borsada tersi olur. Bir noktada islem yapilamaz.
+
+  COZUM:  Periyodik olarak bakiyeleri yeniden dengele.
+          (Kripto transfer veya TL havale ile)
+
+  REBALANCING MALIYETI:
+  - BTC transfer ucreti : {reb_maliyet_tl:>8,.0f} TL (${BTC_NETWORK_UCRETI_USD:.0f})
+  - Rebalancing esigi   : Bir bakiye %{(1-REBALANCING_ESIGI)*100:.0f}'in altina dustugunde
+  - Tahmini siklik      : Her 5-10 islemde bir
+  - Bu maliyet kari azaltir ama transfer modelinden yine UCUZ
 """)
 
     # ----------------------------------------------------------
@@ -425,36 +480,32 @@ def rapor_yazdir():
     print("-" * 65)
     print()
 
-    son_sermayeler, islem_sayilari, basarili_islemler = arbitraj_simulasyonu(
-        SERMAYE_TL, btc_try, usd_try
+    sonuclar, islem_sayilari, reb_sayilari, karli_sayilari = arbitraj_simulasyonu(
+        btc_try, usd_try
     )
 
-    ort_sermaye = statistics.mean(son_sermayeler)
-    medyan_sermaye = statistics.median(son_sermayeler)
-    en_iyi = max(son_sermayeler)
-    en_kotu = min(son_sermayeler)
-    std_dev = statistics.stdev(son_sermayeler)
+    ort = statistics.mean(sonuclar)
+    medyan = statistics.median(sonuclar)
+    en_iyi = max(sonuclar)
+    en_kotu = min(sonuclar)
+    std = statistics.stdev(sonuclar)
     ort_islem = statistics.mean(islem_sayilari)
-    ort_basarili = statistics.mean(basarili_islemler)
+    ort_reb = statistics.mean(reb_sayilari)
+    ort_karli = statistics.mean(karli_sayilari)
 
-    zararda = sum(1 for s in son_sermayeler if s < SERMAYE_TL) / SIMULASYON_SAYISI * 100
+    zararda = sum(1 for s in sonuclar if s < TOPLAM_SERMAYE_TL) / SIMULASYON_SAYISI * 100
     karda = 100 - zararda
 
-    print(f"  Simulasyon parametreleri:")
-    print(f"    Turkiye primi ort.  : %{TURKIYE_PRIMI_ORT_PCT*100:.1f}")
-    print(f"    Turkiye primi std.  : %{TURKIYE_PRIMI_STD_PCT*100:.1f}")
-    print(f"    Islem/gun           : {ISLEM_PER_GUN}")
-    print(f"    Islem buyuklugu     : kasanin %50'si")
-    print()
     print(f"  Sonuclar:")
-    print(f"    Ort. son sermaye    : {ort_sermaye:>12,.0f} TL ({(ort_sermaye/SERMAYE_TL-1)*100:+.2f}%)")
-    print(f"    Medyan son sermaye  : {medyan_sermaye:>12,.0f} TL ({(medyan_sermaye/SERMAYE_TL-1)*100:+.2f}%)")
-    print(f"    En iyi senaryo      : {en_iyi:>12,.0f} TL")
-    print(f"    En kotu senaryo     : {en_kotu:>12,.0f} TL")
-    print(f"    Std. sapma          : {std_dev:>12,.0f} TL")
+    print(f"    Ort. son sermaye    : {ort:>12,.0f} TL ({(ort/TOPLAM_SERMAYE_TL-1)*100:+.2f}%)")
+    print(f"    Medyan son sermaye  : {medyan:>12,.0f} TL ({(medyan/TOPLAM_SERMAYE_TL-1)*100:+.2f}%)")
+    print(f"    En iyi senaryo      : {en_iyi:>12,.0f} TL ({(en_iyi/TOPLAM_SERMAYE_TL-1)*100:+.2f}%)")
+    print(f"    En kotu senaryo     : {en_kotu:>12,.0f} TL ({(en_kotu/TOPLAM_SERMAYE_TL-1)*100:+.2f}%)")
+    print(f"    Std. sapma          : {std:>12,.0f} TL")
     print()
     print(f"    Ort. islem sayisi   : {ort_islem:>8.1f} ({GUN_SAYISI} gunde)")
-    print(f"    Ort. basarili islem : {ort_basarili:>8.1f}")
+    print(f"    Ort. karli islem    : {ort_karli:>8.1f} ({ort_karli/max(ort_islem,1)*100:.0f}%)")
+    print(f"    Ort. rebalancing    : {ort_reb:>8.1f} kez")
     print(f"    Karda biten         : %{karda:.1f}")
     print(f"    Zararda biten       : %{zararda:.1f}")
     print()
@@ -462,18 +513,18 @@ def rapor_yazdir():
     # Dagilim
     print("  Sonuc dagilimi:")
     araliklar = [
-        (0, 80000, " <80K      "),
-        (80000, 90000, " 80K - 90K "),
+        (0, 90000, " <90K      "),
         (90000, 95000, " 90K - 95K "),
-        (95000, 100000, " 95K - 100K"),
-        (100000, 105000, "100K - 105K"),
+        (95000, 98000, " 95K - 98K "),
+        (98000, 100000, " 98K - 100K"),
+        (100000, 102000, "100K - 102K"),
+        (102000, 105000, "102K - 105K"),
         (105000, 110000, "105K - 110K"),
-        (110000, 120000, "110K - 120K"),
-        (120000, float('inf'), "120K+      "),
+        (110000, float('inf'), "110K+      "),
     ]
 
     for alt, ust, etiket in araliklar:
-        sayi = sum(1 for s in son_sermayeler if alt <= s < ust)
+        sayi = sum(1 for s in sonuclar if alt <= s < ust)
         oran = sayi / SIMULASYON_SAYISI * 100
         bar = "#" * int(oran / 0.5)
         print(f"    {etiket} : {oran:5.1f}% |{bar}")
@@ -481,32 +532,32 @@ def rapor_yazdir():
     print()
 
     # ----------------------------------------------------------
-    # 6) PRATIK ENGELLER
+    # 6) PRATIK GEREKSINIMLER
     # ----------------------------------------------------------
     print("-" * 65)
-    print("  6) PRATIK ENGELLER (Simulasyonda Yer Almayan)")
+    print("  6) PRATIK GEREKSINIMLER")
     print("-" * 65)
-    print("""
-  a) PARA TRANSFERI:
-     - TL'yi Midas'tan cekmek: 1-2 is gunu (EFT/havale)
-     - USDT/BTC transferi: 10-60 dk (ag yogunluguna bagli)
-     - Sermaye iki borsada da kilit olur
+    print(f"""
+  BU STRATEJI ICIN GEREKENLER:
 
-  b) MIDAS'TAN KRIPTO CEKME LIMITLERI:
-     - Gunluk cekim limitleri olabilir
-     - KYC/AML gecikmeleri yasanabilir
+  a) SERMAYE: Iki borsada da hem TL hem coin hazir olmali
+     - Toplam {TOPLAM_SERMAYE_TL:,.0f} TL ({BORSA_BASI_SERMAYE:,.0f} TL x 2 borsa)
+     - Sermaye verimliligi: %50 (paranin yarisi "bekleme"de)
 
-  c) VERGI:
-     - Turkiye'de kripto geliri vergilendirilir
-     - Her islem vergiye tabi olabilir
+  b) HIZ: Fiyat farkini ANINDA gormen ve islem yapman gerek
+     - Manuel takip ile ZOR (fark saniyeler icinde kapanir)
+     - Bot/API gerekli ama Midas'in halka acik API'si YOK
+     - Manuel yapacaksan sadece BUYUK farklari (%1+) yakala
 
-  d) REGÜLASYON RISKI:
-     - SPK/MASAK duzenleme degisiklikleri
-     - Kripto transferlere kisitlama gelebilir
+  c) IKI BORSADA DA HESAP: KYC onaylanmis hesap
+     - Midas: TC vatandasi, KYC onaylanmis
+     - Binance: Turkiye'den erisim durumu degisken
 
-  e) LIKIDITE:
-     - Buyuk islemlerde orderbook derinligi yetersiz
-     - Slippage beklenenden cok daha yuksek olabilir
+  d) IZLEME ARACI: Fiyat farklarini gercek zamanli izle
+     - TradingView, CoinGecko gibi araclarda iki borsayi karsılastir
+     - Veya kendi izleme scriptini yaz (Binance API ile)
+
+  e) VERGI: Her islem vergi yukumlulugu olusturabilir
 """)
 
     # ----------------------------------------------------------
@@ -516,38 +567,36 @@ def rapor_yazdir():
     print("  SONUC VE ONERILER")
     print("=" * 65)
 
-    basabas = minimum_prim_hesapla(SERMAYE_TL, usd_try)
+    basabas = minimum_fark_hesapla(25_000)
 
     print(f"""
-  KISA CEVAP: Arbitraj TEORIK OLARAK MUMKUN ama PRATIK'TE COK ZOR.
+  KISA CEVAP: Esanli arbitraj, transfer modelinden COK DAHA IYI.
 
-  NEDEN?
+  AVANTAJLAR:
+  + Transfer riski YOK (aynı anda al-sat)
+  + Network ucreti YOK (normal islemlerde)
+  + Maliyet sadece %{basabas:.2f} (komisyon + slippage)
+  + Daha sik islem yapilabilir
 
-  1. MALIYET BARAJI:
-     - 100.000 TL islem icin basabas primi: %{basabas:.2f}
-     - Normal piyasa primi: %0.5-1.5 (genelde YETERSIZ)
-     - Sadece panik/FOMO zamanlarinda %3-5 prim olusur
+  DEZAVANTAJLAR:
+  - 2x sermaye gerekir (iki borsada da para olmali)
+  - Sermayenin %50'si "bekleme"de (coin olarak tutuluyor)
+  - Rebalancing gerekir (periyodik transfer maliyeti)
+  - Manuel yapmak ZOR (hiz gerek, bot/API lazim)
+  - Midas'in API'si yok (otomasyon zor)
 
-  2. ZAMAN RISKI:
-     - BTC transferi ~30 dk surer
-     - Bu surede %{sigma_pct:.2f} fiyat degisimi olabilir
-     - Primi silecek kadar buyuk bir hareket %{zaman_riski_hesapla(basabas)*100:.0f} olasilikla gerceklesir
+  MONTE CARLO SONUCU ({GUN_SAYISI} gun):
+  - Ort. getiri    : {(ort/TOPLAM_SERMAYE_TL-1)*100:+.2f}%
+  - Medyan getiri  : {(medyan/TOPLAM_SERMAYE_TL-1)*100:+.2f}%
+  - Zarar olasiligi: %{zararda:.1f}
 
-  3. SERMAYE VERIMSIZLIGI:
-     - Para iki borsada kilit kalir
-     - Gunluk cekim limitleri arbitraji yavaslatir
-     - Ayni sermaye ile az sayida islem yapilabilir
-
-  4. MONTE CARLO SONUCU:
-     - Ort. %1.5 prim ile 30 gunde: {(ort_sermaye/SERMAYE_TL-1)*100:+.2f}% getiri
-     - %{zararda:.0f} olasilikla zarar, %{karda:.0f} olasilikla kar
-
-  ONERILER:
-  - Arbitraj yerine SPOT AL-TUT veya DCA stratejisi daha guvenli
-  - Arbitraj yapacaksan: USDT ciftlerini kullan (daha hizli transfer)
-  - Buyuk primler (%3+) olusan NADIR anlar icin hazirlikli ol
-  - Her iki borsada da onceden sermaye bulundur (transfer bekleme)
-  - Kucuk miktarlarla test et, buyuk sermaye riske atma
+  PRATIK ONERILER:
+  1. Once KUCUK sermaye ile dene (10-20K TL)
+  2. Manuel yapacaksan sadece %1+ farklari hedefle
+  3. Binance API ile fiyat izleme botu yaz
+  4. Midas'ta manuel islem yap (API yok)
+  5. Rebalancing icin USDT/TRC20 kullan (ucuz transfer)
+  6. Gunluk kar hedefi koy, asiri islem yapma
 """)
 
 
