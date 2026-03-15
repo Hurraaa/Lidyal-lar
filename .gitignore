@@ -1,0 +1,12 @@
+# API anahtarlari ve gizli bilgiler
+.env
+*.env
+
+# Bot log ve gecmis dosyalari
+arbitraj_bot.log
+islem_gecmisi.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
